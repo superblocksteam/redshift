@@ -51,7 +51,7 @@ export default class RedshiftPlugin extends BasePlugin {
     try {
       const ret = new ExecutionOutput();
       const query = actionConfiguration.body;
-      if (isEmpty(query)) {
+      if (!query || isEmpty(query)) {
         return ret;
       }
 
@@ -125,7 +125,7 @@ export default class RedshiftPlugin extends BasePlugin {
       if (!auth) {
         throw new IntegrationError('Auth not specified for Redshift step');
       }
-      if (!auth.custom?.databaseName.value) {
+      if (!auth.custom?.databaseName?.value) {
         throw new IntegrationError('Database name not specified for Redshift step');
       }
       const client = new Client({
