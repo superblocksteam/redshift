@@ -1,6 +1,6 @@
 {
   "name": "@superblocksteam/redshift",
-  "version": "0.2073.0",
+  "version": "0.2126.0",
   "description": "Superblocks Redshift Plugin",
   "publishConfig": {
     "registry": "https://npm.pkg.github.com"
