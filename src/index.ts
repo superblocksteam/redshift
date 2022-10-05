@@ -12,10 +12,12 @@ import {
 } from '@superblocksteam/shared';
 import {
   ActionConfigurationResolutionContext,
-  BasePlugin,
+  DatabasePlugin,
   normalizeTableColumnNames,
   PluginExecutionProps,
-  resolveActionConfigurationPropertyUtil
+  resolveActionConfigurationPropertyUtil,
+  CreateConnection,
+  DestroyConnection
 } from '@superblocksteam/shared-backend';
 import { groupBy, isEmpty } from 'lodash';
 import { Client, Notification } from 'pg';
@@ -24,8 +26,8 @@ import { NoticeMessage } from 'pg-protocol/dist/messages';
 const TEST_CONNECTION_TIMEOUT = 5000;
 const DEFAULT_SCHEMA = 'public';
 
-export default class RedshiftPlugin extends BasePlugin {
-  async resolveActionConfigurationProperty({
+export default class RedshiftPlugin extends DatabasePlugin {
+  public async resolveActionConfigurationProperty({
     context,
     actionConfiguration,
     files,
@@ -33,58 +35,68 @@ export default class RedshiftPlugin extends BasePlugin {
     escapeStrings
   }: // eslint-disable-next-line @typescript-eslint/no-explicit-any
   ActionConfigurationResolutionContext): Promise<ResolvedActionConfigurationProperty> {
-    return resolveActionConfigurationPropertyUtil(super.resolveActionConfigurationProperty, {
-      context,
-      actionConfiguration,
-      files,
-      property,
-      escapeStrings
-    });
+    return this.tracer.startActiveSpan(
+      'plugin.resolveActionConfigurationProperty',
+      { attributes: this.getTraceTags(), kind: 1 /* SpanKind.SERVER */ },
+      async (span) => {
+        const resolvedActionConfigurationProperty = resolveActionConfigurationPropertyUtil(super.resolveActionConfigurationProperty, {
+          context,
+          actionConfiguration,
+          files,
+          property,
+          escapeStrings
+        });
+        span.end();
+        return resolvedActionConfigurationProperty;
+      }
+    );
   }
 
-  async execute({
+  public async execute({
     context,
     datasourceConfiguration,
     actionConfiguration
   }: PluginExecutionProps<RedshiftDatasourceConfiguration>): Promise<ExecutionOutput> {
-    const client = await this.createClient(datasourceConfiguration);
+    const client = await this.createConnection(datasourceConfiguration);
     try {
       const ret = new ExecutionOutput();
       const query = actionConfiguration.body;
       if (!query || isEmpty(query)) {
         return ret;
       }
-
-      const rows = await client.query(query, context.preparedStatementContext);
+      const rows = await this.executeQuery(() => {
+        return client.query(query, context.preparedStatementContext);
+      });
       ret.output = normalizeTableColumnNames(rows.rows);
       return ret;
     } catch (err) {
       throw new IntegrationError(`Redshift query failed, ${err.message}`);
     } finally {
       if (client) {
-        await client.end();
+        this.destroyConnection(client);
       }
     }
   }
 
-  getRequest(actionConfiguration: RedshiftActionConfiguration): RawRequest {
+  public getRequest(actionConfiguration: RedshiftActionConfiguration): RawRequest {
     return actionConfiguration.body;
   }
 
-  dynamicProperties(): string[] {
+  public dynamicProperties(): string[] {
     return ['body'];
   }
 
-  async metadata(datasourceConfiguration: RedshiftDatasourceConfiguration): Promise<DatasourceMetadataDto> {
-    let client: Client | undefined;
+  public async metadata(datasourceConfiguration: RedshiftDatasourceConfiguration): Promise<DatasourceMetadataDto> {
+    const client = await this.createConnection(datasourceConfiguration);
     if (!datasourceConfiguration) {
       throw new IntegrationError('Datasource configuration not specified for Redshift step');
     }
     const schema = datasourceConfiguration.authentication?.custom?.databaseSchema?.value ?? DEFAULT_SCHEMA;
     try {
-      client = await this.createClient(datasourceConfiguration);
       const schemaQuery = `SELECT * FROM pg_table_def WHERE schemaname = '${schema}'`;
-      const schemaResult = await client.query(schemaQuery);
+      const schemaResult = await this.executeQuery(() => {
+        return client.query(schemaQuery);
+      });
 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const tableMapping = groupBy(schemaResult.rows, (result: any) => result.tablename);
@@ -110,12 +122,21 @@ export default class RedshiftPlugin extends BasePlugin {
       throw new IntegrationError(`Failed to connect to Redshift, ${err.message}`);
     } finally {
       if (client) {
-        await client.end();
+        this.destroyConnection(client);
       }
     }
   }
 
-  private async createClient(datasourceConfiguration: RedshiftDatasourceConfiguration, connectionTimeoutMillis = 30000): Promise<Client> {
+  @DestroyConnection
+  private async destroyConnection(connection: Client): Promise<void> {
+    await connection.end();
+  }
+
+  @CreateConnection
+  private async createConnection(
+    datasourceConfiguration: RedshiftDatasourceConfiguration,
+    connectionTimeoutMillis = 30000
+  ): Promise<Client> {
     try {
       const endpoint = datasourceConfiguration.endpoint;
       if (!endpoint) {
@@ -170,16 +191,17 @@ export default class RedshiftPlugin extends BasePlugin {
     });
   }
 
-  async test(datasourceConfiguration: RedshiftDatasourceConfiguration): Promise<void> {
-    let client: Client | null = null;
+  public async test(datasourceConfiguration: RedshiftDatasourceConfiguration): Promise<void> {
+    const client = await this.createConnection(datasourceConfiguration, TEST_CONNECTION_TIMEOUT);
     try {
-      client = await this.createClient(datasourceConfiguration, TEST_CONNECTION_TIMEOUT);
-      await client.query('SELECT NOW()');
+      await this.executeQuery(() => {
+        return client.query('SELECT NOW()');
+      });
     } catch (err) {
       throw new IntegrationError(`Test Redshift connection failed, ${err.message}`);
     } finally {
       if (client) {
-        await client.end();
+        this.destroyConnection(client);
       }
     }
   }
