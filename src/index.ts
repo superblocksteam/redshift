@@ -10,7 +10,7 @@ import {
   TableType
 } from '@superblocksteam/shared';
 import {
-  DatabasePlugin,
+  DatabasePluginPooled,
   normalizeTableColumnNames,
   PluginExecutionProps,
   CreateConnection,
@@ -23,17 +23,11 @@ import { NoticeMessage } from 'pg-protocol/dist/messages';
 const TEST_CONNECTION_TIMEOUT = 5000;
 const DEFAULT_SCHEMA = 'public';
 
-export default class RedshiftPlugin extends DatabasePlugin {
-  constructor() {
-    super({ useOrderedParameters: true });
-  }
-
-  public async execute({
-    context,
-    datasourceConfiguration,
-    actionConfiguration
-  }: PluginExecutionProps<RedshiftDatasourceConfiguration>): Promise<ExecutionOutput> {
-    const client = await this.createConnection(datasourceConfiguration);
+export default class RedshiftPlugin extends DatabasePluginPooled<Client, RedshiftDatasourceConfiguration> {
+  protected async executePooled(
+    { context, actionConfiguration }: PluginExecutionProps<RedshiftDatasourceConfiguration>,
+    client: Client
+  ): Promise<ExecutionOutput> {
     try {
       const ret = new ExecutionOutput();
       const query = actionConfiguration.body;
@@ -47,12 +41,6 @@ export default class RedshiftPlugin extends DatabasePlugin {
       return ret;
     } catch (err) {
       throw new IntegrationError(`Redshift query failed, ${err.message}`);
-    } finally {
-      if (client) {
-        this.destroyConnection(client).catch(() => {
-          // Error handling is done in the decorator
-        });
-      }
     }
   }
 
@@ -108,12 +96,12 @@ export default class RedshiftPlugin extends DatabasePlugin {
   }
 
   @DestroyConnection
-  private async destroyConnection(connection: Client): Promise<void> {
+  protected async destroyConnection(connection: Client): Promise<void> {
     await connection.end();
   }
 
   @CreateConnection
-  private async createConnection(
+  protected async createConnection(
     datasourceConfiguration: RedshiftDatasourceConfiguration,
     connectionTimeoutMillis = 30000
   ): Promise<Client> {
